@@ -1,0 +1,117 @@
+SQL procedure for booking tickets
+ 
+CREATE DEFINER=root@localhost PROCEDURE book_tickets(IN p_travel_date DATE, IN 
+p_passenger_ids VARCHAR(255), IN p_class_id INT, IN p_boarding_station_id INT, IN 
+p_arrival_station_id INT, IN p_train_id INT, IN p_payment_mode VARCHAR(50)) 
+BEGIN 
+    DECLARE v_passenger_id, v_passenger_count, v_seat_id, v_boarding_sequence, 
+v_arrival_sequence, v_station_diAerence, v_ticket_id, v_payment_id, v_available_count, 
+v_rac_count, v_waiting_count, v_has_seat_entries, i, v_oAset INT DEFAULT 0; 
+    DECLARE v_remaining VARCHAR(255); 
+    DECLARE v_fare_multiplier, v_passenger_amount, v_total_amount DECIMAL(10,2) DEFAULT 
+0; 
+    DECLARE v_category, v_ticket_status, v_seat_no VARCHAR(50); 
+    DECLARE v_current_date DATE; 
+ 
+    SET v_current_date=CURDATE(); 
+    SELECT COUNT(*) INTO v_has_seat_entries FROM seat WHERE Train_id=p_train_id AND 
+Travel_date=p_travel_date AND Class_id=p_class_id; 
+    IF v_has_seat_entries=0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='No seat 
+entries available'; END IF; 
+ 
+    SELECT Fare_multiplier INTO v_fare_multiplier FROM class WHERE Class_id=p_class_id; 
+    SELECT Station_sequence INTO v_boarding_sequence FROM routes WHERE 
+Train_id=p_train_id AND Station_id=p_boarding_station_id; 
+    SELECT Station_sequence INTO v_arrival_sequence FROM routes WHERE Train_id=p_train_id 
+AND Station_id=p_arrival_station_id; 
+    IF v_boarding_sequence IS NULL OR v_arrival_sequence IS NULL THEN SIGNAL SQLSTATE 
+'45000' SET MESSAGE_TEXT='Invalid boarding/arrival station'; END IF; 
+    IF v_boarding_sequence>=v_arrival_sequence THEN SIGNAL SQLSTATE '45000' SET 
+MESSAGE_TEXT='Boarding station must precede arrival'; END IF; 
+ 
+    SET v_station_diAerence=v_arrival_sequence-v_boarding_sequence; 
+    SELECT COUNT(*) INTO v_available_count FROM seat WHERE Train_id=p_train_id AND 
+Class_id=p_class_id AND Travel_date=p_travel_date AND Availibility='Available'; 
+    SELECT COUNT(*) INTO v_rac_count FROM RAC_info WHERE Train_id=p_train_id AND 
+Class_id=p_class_id AND Travel_date=p_travel_date; 
+    SELECT COUNT(*) INTO v_waiting_count FROM WL_info WHERE Train_id=p_train_id AND 
+Class_id=p_class_id AND Travel_date=p_travel_date; 
+ 
+    SET @v_common_pnr=CONCAT('PNR',LPAD(FLOOR(RAND()*1000000),6,'0')); 
+ 
+    CREATE TEMPORARY TABLE IF NOT EXISTS temp_passengers(id INT); 
+    SET v_remaining=p_passenger_ids; 
+    WHILE LENGTH(v_remaining)>0 DO 
+        SET v_passenger_count=v_passenger_count+1; 
+        IF LOCATE(',',v_remaining)>0 THEN 
+            SET v_passenger_id=SUBSTRING(v_remaining,1,LOCATE(',',v_remaining)-1); 
+            SET v_remaining=SUBSTRING(v_remaining,LOCATE(',',v_remaining)+1); 
+        ELSE 
+            SET v_passenger_id=v_remaining; 
+            SET v_remaining=''; 
+        END IF; 
+        INSERT INTO temp_passengers VALUES(v_passenger_id); 
+    END WHILE; 
+ 
+    IF v_passenger_count>(v_available_count+(5-v_rac_count)+1000) THEN DROP TEMPORARY 
+TABLE temp_passengers; SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Not enough seats'; 
+END IF; 
+ 
+    CREATE TEMPORARY TABLE IF NOT EXISTS temp_ticket_details(Passenger_id INT, seat_id INT, 
+ticket_status VARCHAR(20)); 
+    SET i=1; 
+    WHILE i<=v_passenger_count DO 
+        SET v_oAset=i-1; 
+        SELECT id INTO v_passenger_id FROM temp_passengers LIMIT v_oAset,1; 
+        SELECT Category INTO v_category FROM passengers WHERE 
+Passenger_id=v_passenger_id; 
+        SET v_passenger_amount=500+(v_station_diAerence*v_fare_multiplier); 
+        IF v_category IS NOT NULL THEN SET v_passenger_amount=v_passenger_amount*0.9; END 
+IF; 
+        SET v_passenger_amount=FLOOR(v_passenger_amount); 
+        SET v_total_amount=v_total_amount+v_passenger_amount; 
+ 
+        IF v_available_count>0 THEN 
+            SELECT Seat_id,Seat_no INTO v_seat_id,v_seat_no FROM seat WHERE Train_id=p_train_id 
+AND Class_id=p_class_id AND Travel_date=p_travel_date AND Availibility='Available' LIMIT 1; 
+            SET v_ticket_status='Confirmed'; 
+            SET v_available_count=v_available_count-1; 
+            UPDATE seat SET Availibility='Booked' WHERE Seat_id=v_seat_id; 
+        ELSE 
+            SELECT COUNT(*) INTO v_rac_count FROM RAC_info WHERE Train_id=p_train_id AND 
+Class_id=p_class_id AND Travel_date=p_travel_date AND Availibility='Booked'; 
+            IF 5-v_rac_count>0 THEN 
+                SELECT RAC_id INTO v_seat_id FROM RAC_info WHERE Train_id=p_train_id AND 
+Class_id=p_class_id AND Travel_date=p_travel_date AND Availibility='Available' LIMIT 1; 
+                SET v_ticket_status='RAC'; 
+                SET v_seat_no=CONCAT('RAC',v_seat_id); 
+                UPDATE RAC_info SET Availibility='Booked' WHERE RAC_id=v_seat_id; 
+            ELSE 
+                SET v_ticket_status='Waiting'; 
+                SET v_seat_id=NULL; 
+                SET v_waiting_count=v_waiting_count+1; 
+                SET v_seat_no=CONCAT('WL',v_waiting_count); 
+                INSERT INTO WL_info(Train_id,Class_id,Travel_date) 
+VALUES(p_train_id,p_class_id,p_travel_date); 
+            END IF;END IF; 
+        INSERT INTO temp_ticket_details VALUES(v_passenger_id,v_seat_id,v_ticket_status); 
+        SET i=i+1; 
+    END WHILE; 
+ 
+    SELECT IFNULL(MAX(Ticket_id),0)+1 INTO v_ticket_id FROM ticket; 
+    SET v_payment_id=v_ticket_id; 
+    INSERT INTO payment 
+VALUES(v_payment_id,v_ticket_id,v_total_amount,p_payment_mode,v_current_date); 
+    INSERT INTO 
+ticket(Ticket_id,Passenger_id,Train_id,PNR,Class_id,Seat_id,Boarding_station,Arrival_station,Ti
+ cket_status,Payment_id,Travel_date) 
+    SELECT 
+v_ticket_id,Passenger_id,p_train_id,@v_common_pnr,p_class_id,seat_id,p_boarding_station_id
+ ,p_arrival_station_id,ticket_status,v_payment_id,p_travel_date FROM temp_ticket_details; 
+ 
+    SELECT @v_common_pnr AS PNR,v_passenger_count AS 
+Total_Tickets_Booked,v_total_amount AS Total_Amount_Charged; 
+    DROP TEMPORARY TABLE temp_passengers; 
+    DROP TEMPORARY TABLE temp_ticket_details; 
+END 
+ 
