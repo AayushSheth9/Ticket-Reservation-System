@@ -37,7 +37,14 @@ Class_id=p_class_id AND Travel_date=p_travel_date;
     SELECT COUNT(*) INTO v_waiting_count FROM WL_info WHERE Train_id=p_train_id AND 
 Class_id=p_class_id AND Travel_date=p_travel_date; 
  
-    SET @v_common_pnr=CONCAT('PNR',LPAD(FLOOR(RAND()*1000000),6,'0')); 
+    
+    pnr_loop: LOOP
+    SET @v_common_pnr = CONCAT('PNR', LPAD(FLOOR(RAND()*1000000), 6, '0'));
+    IF NOT EXISTS (SELECT 1 FROM ticket WHERE PNR = @v_common_pnr) THEN
+        LEAVE pnr_loop;
+    END IF;
+    END LOOP pnr_loop;
+
  
     CREATE TEMPORARY TABLE IF NOT EXISTS temp_passengers(id INT); 
     SET v_remaining=p_passenger_ids; 
