@@ -1,0 +1,80 @@
+Cancellation procedure for tickets: 
+ 
+CREATE DEFINER=root@localhost PROCEDURE cancel_ticket(IN p_ticket_id INT) 
+BEGIN 
+    DECLARE v_ticket_id, v_seat_id, v_train_id, v_class_id, v_payment_id, v_refund_id, 
+v_passenger_count, v_cancelled_confirmed, v_cancelled_rac, v_cancelled_waiting, done INT 
+DEFAULT 0; 
+    DECLARE v_pnr VARCHAR(10);  
+    DECLARE v_travel_date, v_payment_date, v_today DATE; 
+    DECLARE v_payment_amount, v_refund_amount DECIMAL(10,2); 
+     
+    DECLARE seat_cursor CURSOR FOR SELECT Seat_id FROM temp_ticket_details WHERE 
+Ticket_status='Confirmed'; 
+    DECLARE rac_cursor CURSOR FOR SELECT Seat_id FROM rac_info WHERE 
+Train_id=v_train_id AND Class_id=v_class_id AND Travel_date=v_travel_date; 
+ 
+    START TRANSACTION; 
+ 
+    SELECT Train_id, Class_id, Travel_date, Payment_id, PNR, COUNT(*)  
+    INTO v_train_id, v_class_id, v_travel_date, v_payment_id, v_pnr, v_passenger_count 
+    FROM ticket WHERE Ticket_id=p_ticket_id GROUP BY Train_id, Class_id, Travel_date, 
+Payment_id, PNR; 
+ 
+    IF v_train_id IS NULL THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Ticket not found'; 
+ROLLBACK; END IF; 
+ 
+    SELECT Amount, Date_of_Payment INTO v_payment_amount, v_payment_date FROM 
+payment WHERE Payment_id=v_payment_id; 
+ 
+    SET v_today=CURDATE(),  
+        v_refund_amount=CASE  
+            WHEN DATEDIFF(v_travel_date,v_today)>=5 THEN v_payment_amount  
+            WHEN DATEDIFF(v_travel_date,v_today)>=2 THEN v_payment_amount*0.5  
+            WHEN DATEDIFF(v_travel_date,v_today)>=1 THEN v_payment_amount*0.25  
+            ELSE 0  
+        END, 
+        v_refund_id=FLOOR(5000000+RAND()*4000000); 
+ 
+    INSERT INTO refund_record (Refund_id, Payment_id, Amount, Booking_date, 
+Cancellation_date) 
+    VALUES (v_refund_id, v_payment_id, v_refund_amount, v_payment_date, v_today); 
+ 
+    DROP TABLE IF EXISTS temp_ticket_details; 
+    CREATE TABLE temp_ticket_details AS SELECT Ticket_id, Passenger_id, Seat_id, Ticket_status 
+FROM ticket WHERE PNR=v_pnr; 
+ 
+    SELECT  
+        SUM(CASE WHEN Ticket_status='Confirmed' THEN 1 ELSE 0 END), 
+        SUM(CASE WHEN Ticket_status='RAC' THEN 1 ELSE 0 END), 
+        SUM(CASE WHEN Ticket_status='Waiting' THEN 1 ELSE 0 END) 
+    INTO v_cancelled_confirmed, v_cancelled_rac, v_cancelled_waiting FROM 
+temp_ticket_details; 
+ 
+    OPEN seat_cursor; 
+    read_seat: LOOP 
+        FETCH seat_cursor INTO v_seat_id; 
+        IF done THEN LEAVE read_seat; END IF; 
+        UPDATE seat SET Availability='Available' WHERE Seat_id=v_seat_id; 
+    END LOOP; 
+    CLOSE seat_cursor; 
+ 
+    OPEN rac_cursor; 
+    read_rac: LOOP 
+        FETCH rac_cursor INTO v_seat_id; 
+        IF done THEN LEAVE read_rac; END IF; 
+        UPDATE rac_info SET Availability='Available' WHERE Seat_id=v_seat_id AND 
+Train_id=v_train_id AND Class_id=v_class_id AND Travel_date=v_travel_date; 
+    END LOOP; 
+    CLOSE rac_cursor; 
+    DELETE FROM wl_info WHERE Train_id=v_train_id AND Class_id=v_class_id AND 
+Travel_date=v_travel_date; 
+    DELETE FROM ticket WHERE PNR=v_pnr; 
+    DELETE FROM payment WHERE Payment_id=v_payment_id; 
+    COMMIT; 
+    SELECT p_ticket_id AS Cancelled_Ticket_ID, v_pnr AS Cancelled_PNR, v_passenger_count AS 
+Passengers_AAected,  
+           v_refund_amount AS Refund_Amount, v_refund_id AS Refund_ID,  
+           v_cancelled_confirmed AS Confirmed_Tickets_Cancelled, v_cancelled_rac AS 
+RAC_Tickets_Cancelled,  
+           v_cancelled_waiting AS Waiting_Tickets_Cancelled; END
