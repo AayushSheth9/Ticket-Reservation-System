@@ -3,7 +3,7 @@
 ### CS2202 Mini Project  
 **Group Members:**
 - Aayush Sheth – 2301CS02  
-- Anish Raghasshetty – 2301CS05  
+- Anish Raghashetty – 2301CS05  
 - Aryan Phad – 2301CS09  
 
 ---
