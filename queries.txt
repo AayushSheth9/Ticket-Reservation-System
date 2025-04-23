@@ -1,0 +1,263 @@
+LIST OF ALL THE POTENTIAL QUERIES  
+ 
+Query1 ---- PNR status tracking for a given ticket : 
+ 
+DELIMITER // 
+CREATE PROCEDURE CheckPNRStatus( 
+    IN p_pnr VARCHAR(10) 
+) 
+BEGIN 
+    SELECT t.PNR, p.Name, p.Age, p.Gender, tr.Train_name,  
+           s1.Station_name AS Boarding_station,  
+           s2.Station_name AS Arrival_station,  
+           c.Class_name,  
+           COALESCE(se.Seat_no, 'Not Assigned') AS Seat_no,  
+           t.Ticket_status, 
+           t.Travel_date, 
+           CASE  
+               WHEN t.Ticket_status = 'Waitlisted' THEN 
+                   (SELECT COUNT(*) + 1 FROM ticket  
+                    WHERE Train_id = t.Train_id AND Class_id = t.Class_id  
+                    AND Ticket_status = 'Waitlisted' AND Travel_date = t.Travel_date  
+                    AND Ticket_id < t.Ticket_id) 
+               ELSE NULL 
+           END AS Waitlist_Position 
+    FROM ticket t 
+    JOIN passengers p ON t.Passenger_id = p.Passenger_id 
+    JOIN trains tr ON t.Train_id = tr.Train_no 
+    JOIN stations s1 ON t.Boarding_station = s1.Station_id 
+    JOIN stations s2 ON t.Arrival_station = s2.Station_id 
+    JOIN class c ON t.Class_id = c.Class_id 
+    LEFT JOIN seat se ON t.Seat_id = se.Seat_id 
+    WHERE t.PNR = p_pnr 
+    ORDER BY p.Name; 
+END // 
+DELIMITER ; 
+ 
+ 
+Query 2 ---- Train schedule lookup for a given train. 
+ 
+CREATE PROCEDURE GetTrainSchedule( 
+    IN p_train_id INT 
+) 
+BEGIN 
+    -- Get basic train information 
+    SELECT t.Train_no, t.Train_name, t.Type,  
+           CASE  
+               WHEN SUBSTRING(t.Days_of_operation, 1, 1) = 'Y' THEN 'Mon, ' ELSE '' END + 
+               CASE WHEN SUBSTRING(t.Days_of_operation, 2, 1) = 'Y' THEN 'Tue, ' ELSE '' END + 
+               CASE WHEN SUBSTRING(t.Days_of_operation, 3, 1) = 'Y' THEN 'Wed, ' ELSE '' END + 
+               CASE WHEN SUBSTRING(t.Days_of_operation, 4, 1) = 'Y' THEN 'Thu, ' ELSE '' END + 
+               CASE WHEN SUBSTRING(t.Days_of_operation, 5, 1) = 'Y' THEN 'Fri, ' ELSE '' END + 
+               CASE WHEN SUBSTRING(t.Days_of_operation, 6, 1) = 'Y' THEN 'Sat, ' ELSE '' END + 
+               CASE WHEN SUBSTRING(t.Days_of_operation, 7, 1) = 'Y' THEN 'Sun' ELSE '' END AS 
+Running_Days 
+    FROM trains t 
+    WHERE t.Train_no = p_train_id; 
+     
+    -- Get detailed schedule 
+    SELECT r.Station_sequence AS Stop_Number,  
+           s.Station_name,  
+           r.Arrival_time,  
+           r.Departure_time, 
+           CASE 
+               WHEN r.Arrival_time IS NULL THEN 'Source Station' 
+               WHEN r.Departure_time IS NULL THEN 'Destination Station' 
+               ELSE 'Intermediate Station' 
+           END AS Station_Type, 
+           TIMEDIFF(r.Departure_time, r.Arrival_time) AS Halt_Time 
+    FROM routes r 
+    JOIN stations s ON r.Station_id = s.Station_id 
+    WHERE r.Train_id = p_train_id 
+    ORDER BY r.Station_sequence; 
+END  
+ 
+ 
+Query 3 ---- Available seats query for a specific train, date and class: 
+ 
+CREATE DEFINER=root@localhost PROCEDURE GetAvailableSeats( 
+    IN p_train_id INT, 
+    IN p_class_id VARCHAR(10), 
+    IN p_travel_date DATE 
+) 
+BEGIN 
+    -- Query available confirmed seats from 'seats' 
+    SELECT 'CONFIRMED' AS category, COUNT(*) AS seats 
+    FROM seat 
+    WHERE Train_id = p_train_id 
+      AND Class_id = p_class_id 
+      AND Travel_date = p_travel_date 
+      AND Availibility = 'Available'       
+      UNION ALL 
+    -- Query available RAC seats from 'rac' 
+    SELECT 'RAC' AS category, COUNT(*) AS seats 
+    FROM rac_info 
+    WHERE Train_id = p_train_id 
+      AND Class_id = p_class_id 
+      AND Travel_date = p_travel_date 
+      AND Availibility = 'Available'; 
+END 
+ 
+ 
+ 
+Query 4 ---- List all passengers traveling on a specific train on a given date 
+ 
+ 
+DELIMITER // 
+CREATE PROCEDURE GetPassengerList( 
+    IN p_train_id INT, 
+    IN p_travel_date DATE 
+) 
+BEGIN 
+    SELECT  
+        tk.Ticket_status AS Passenger_Type, 
+        tk.PNR, 
+        p.Name, 
+        p.Age, 
+        p.Gender, 
+        p.Category, 
+        c.Class_name, 
+        COALESCE(se.Seat_no, 'Not Assigned') AS Seat_no, 
+        s1.Station_name AS Boarding_station, 
+        s2.Station_name AS Arrival_station, 
+        pm.Amount AS Ticket_Amount 
+    FROM ticket tk 
+    JOIN passengers p ON tk.Passenger_id = p.Passenger_id 
+    JOIN class c ON tk.Class_id = c.Class_id 
+    LEFT JOIN seat se ON tk.Seat_id = se.Seat_id 
+    JOIN stations s1 ON tk.Boarding_station = s1.Station_id 
+    JOIN stations s2 ON tk.Arrival_station = s2.Station_id 
+    JOIN payment pm ON tk.Payment_id = pm.Payment_id 
+    WHERE tk.Train_id = p_train_id 
+    AND tk.Travel_date = p_travel_date 
+    ORDER BY tk.Ticket_status, p.Name; 
+END // 
+ 
+DELIMITER ; 
+ 
+ 
+Query 5 ---- Retrieve all waitlisted passengers for a particular train. 
+ 
+CREATE PROCEDURE GetWaitlistedPassengers( 
+    IN p_train_id INT 
+) 
+BEGIN 
+    SELECT  
+        passengers.Passenger_id, 
+        passengers.Name, 
+        ticket.Travel_date 
+    FROM ticket 
+    JOIN passengers ON ticket.Passenger_id = passengers.Passenger_id 
+    WHERE ticket.Train_id = p_train_id 
+      AND ticket.Ticket_status = 'Waiting' 
+    ORDER BY passengers.Name; 
+END  
+ 
+ 
+ 
+Query 6 ---- Find total amount that needs to be refunded for cancelling a train. 
+ 
+CREATE PROCEDURE CalculateTrainCancellationRefund( 
+    IN p_train_no INT, 
+    IN p_travel_date DATE 
+) 
+BEGIN 
+    SELECT  
+        SUM(pm.Amount) AS Total_Refund_Amount 
+    FROM payment pm 
+    WHERE pm.Payment_id IN ( 
+        SELECT DISTINCT tk.Payment_id 
+        FROM ticket tk 
+        WHERE tk.Train_id = p_train_no 
+          AND tk.Travel_date = p_travel_date 
+          AND tk.Ticket_status IN ('Confirmed', 'RAC', 'Waiting') 
+    ); 
+END  
+ 
+ 
+Query 7 ---- Total revenue generated from ticket bookings over a specified period. 
+ 
+DELIMITER // 
+ 
+CREATE PROCEDURE CalculateTotalRevenue( 
+    IN p_start_date DATE, 
+    IN p_end_date DATE 
+) 
+BEGIN 
+    SELECT  
+        SUM(Amount) AS Total_Revenue 
+    FROM payment 
+    WHERE Date_of_Payment BETWEEN p_start_date AND p_end_date; 
+END // 
+ 
+DELIMITER ; 
+ 
+ 
+ 
+Query 8 ---- Find the busiest train based on passenger count. 
+ 
+CREATE PROCEDURE FindBusiestTrain() 
+BEGIN 
+    -- Find the train with the maximum number of unique ticket-passenger pairs 
+    SELECT Train_id, COUNT(DISTINCT Ticket_id, Passenger_id) AS Total_Pairs 
+    FROM ticket 
+    GROUP BY Train_id 
+    ORDER BY Total_Pairs DESC 
+    LIMIT 1; 
+END  
+ 
+Query 9 ---- Cancellation records with refund status. 
+       Select * from refund_record; 
+
+ 
+ 
+OTHER INTERESTING QUERIES  
+ 
+Query 10 ---- Get list of trains running on a specific date 
+ 
+CREATE PROCEDURE get_trains_by_date(IN travel_date DATE) 
+BEGIN 
+    SELECT DISTINCT Train_no, Train_name 
+    FROM trains 
+    WHERE SUBSTRING(days_of_operation, DAYOFWEEK(travel_date), 1) = 'Y'; 
+END  
+ 
+ 
+ 
+ 
+Query 11 – Get the day of week in which maximum trains run. 
+ 
+WITH day_counts AS ( 
+  SELECT  
+    1 AS day_no, 'Sunday' AS day_name, SUM(SUBSTRING(days_of_operation,1,1) = 'Y') AS 
+train_count 
+  FROM miniproject.trains 
+  UNION ALL 
+  SELECT  
+    2, 'Monday', SUM(SUBSTRING(days_of_operation,2,1) = 'Y') 
+  FROM miniproject.trains 
+  UNION ALL 
+  SELECT  
+    3, 'Tuesday', SUM(SUBSTRING(days_of_operation,3,1) = 'Y') 
+  FROM miniproject.trains 
+  UNION ALL 
+  SELECT  
+    4, 'Wednesday', SUM(SUBSTRING(days_of_operation,4,1) = 'Y') 
+  FROM miniproject.trains 
+  UNION ALL 
+  SELECT  
+    5, 'Thursday', SUM(SUBSTRING(days_of_operation,5,1) = 'Y') 
+  FROM miniproject.trains 
+  UNION ALL 
+  SELECT  
+    6, 'Friday', SUM(SUBSTRING(days_of_operation,6,1) = 'Y') 
+  FROM miniproject.trains 
+  UNION ALL 
+  SELECT  
+    7, 'Saturday', SUM(SUBSTRING(days_of_operation,7,1) = 'Y') 
+  FROM miniproject.trains 
+), 
+max_count AS ( SELECT MAX(train_count) AS max_trains FROM day_counts) 
+SELECT day_name, train_count 
+FROM day_counts, max_count 
+WHERE train_count = max_trains;
